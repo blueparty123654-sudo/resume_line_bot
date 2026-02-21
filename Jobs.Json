@@ -1,0 +1,78 @@
+{
+  "dev_backend": {
+    "title": "Backend Developer",
+    "passing_score": 60,
+    "must_have_skills": ["Python", "SQL", "API", "Git"],
+    "nice_to_have_skills": ["Docker", "AWS", "FastAPI", "Kubernetes"],
+    "min_experience_years": 1,
+    "min_gpa": 2.50,
+    "accepted_degrees": ["วิทยาการคอมพิวเตอร์", "วิศวกรรมคอมพิวเตอร์", "Computer Science", "Software Engineering", "IT"],
+    "blacklist": ["ถูกไล่ออก", "terminated", "fraud", "ฉ้อโกง"]
+  },
+
+  "dev_frontend": {
+    "title": "Frontend Developer",
+    "passing_score": 60,
+    "must_have_skills": ["JavaScript", "React", "HTML", "CSS"],
+    "nice_to_have_skills": ["TypeScript", "Next.js", "Figma", "Vue"],
+    "min_experience_years": 1,
+    "min_gpa": 2.50,
+    "accepted_degrees": ["วิทยาการคอมพิวเตอร์", "วิศวกรรมคอมพิวเตอร์", "Computer Science", "Software Engineering", "IT", "Multimedia"],
+    "blacklist": ["ถูกไล่ออก", "terminated", "fraud", "ฉ้อโกง"]
+  },
+
+  "data_analyst": {
+    "title": "Data Analyst",
+    "passing_score": 60,
+    "must_have_skills": ["SQL", "Excel", "Python", "Power BI"],
+    "nice_to_have_skills": ["Tableau", "Machine Learning", "Statistics", "R"],
+    "min_experience_years": 1,
+    "min_gpa": 2.75,
+    "accepted_degrees": ["สถิติ", "คณิตศาสตร์", "วิทยาการคอมพิวเตอร์", "Data Science", "Economics", "วิศวกรรมศาสตร์"],
+    "blacklist": ["ถูกไล่ออก", "terminated", "fraud", "ฉ้อโกง"]
+  },
+
+  "hr_officer": {
+    "title": "HR Officer",
+    "passing_score": 55,
+    "must_have_skills": ["สรรหาบุคลากร", "Recruitment", "Excel", "การประเมินผล"],
+    "nice_to_have_skills": ["Payroll", "HRM", "HRIS", "ประกันสังคม"],
+    "min_experience_years": 1,
+    "min_gpa": 2.50,
+    "accepted_degrees": ["การบริหารทรัพยากรมนุษย์", "รัฐศาสตร์", "จิตวิทยา", "บริหารธุรกิจ", "Psychology", "HRM"],
+    "blacklist": ["ถูกไล่ออก", "terminated", "fraud", "ฉ้อโกง", "ล้มละลาย"]
+  },
+
+  "graphic_designer": {
+    "title": "Graphic Designer",
+    "passing_score": 55,
+    "must_have_skills": ["Photoshop", "Illustrator", "Figma", "การออกแบบ"],
+    "nice_to_have_skills": ["After Effects", "Premiere Pro", "Canva", "Branding"],
+    "min_experience_years": 0,
+    "min_gpa": 2.25,
+    "accepted_degrees": ["ออกแบบนิเทศศิลป์", "ศิลปกรรม", "Graphic Design", "Fine Arts", "Digital Media", "นิเทศศาสตร์"],
+    "blacklist": ["ถูกไล่ออก", "terminated", "fraud", "ฉ้อโกง"]
+  },
+
+  "marketing": {
+    "title": "Marketing Officer",
+    "passing_score": 55,
+    "must_have_skills": ["Social Media", "Content", "การตลาดดิจิทัล", "Google Analytics"],
+    "nice_to_have_skills": ["SEO", "Facebook Ads", "Copywriting", "Email Marketing"],
+    "min_experience_years": 1,
+    "min_gpa": 2.50,
+    "accepted_degrees": ["การตลาด", "นิเทศศาสตร์", "บริหารธุรกิจ", "Marketing", "Communication Arts"],
+    "blacklist": ["ถูกไล่ออก", "terminated", "fraud", "ฉ้อโกง"]
+  },
+
+  "accounting": {
+    "title": "Accountant",
+    "passing_score": 60,
+    "must_have_skills": ["บัญชี", "Excel", "งบการเงิน", "ภาษีอากร"],
+    "nice_to_have_skills": ["SAP", "QuickBooks", "ผู้สอบบัญชี", "CPA", "TFRS"],
+    "min_experience_years": 1,
+    "min_gpa": 2.75,
+    "accepted_degrees": ["บัญชี", "การเงิน", "Accounting", "Finance"],
+    "blacklist": ["ถูกไล่ออก", "terminated", "fraud", "ฉ้อโกง", "ยักยอก", "ล้มละลาย"]
+  }
+}
