@@ -1,47 +1,26 @@
-from app.database import get_waiting_resume_by_user
-import sqlite3
 import os
-
+import sqlite3
 from linebot.v3 import WebhookHandler
 from linebot.v3.webhooks import MessageEvent, TextMessageContent, FileMessageContent, FollowEvent
 from linebot.v3.messaging import (
-    MessagingApi,
-    MessagingApiBlob,
-    ReplyMessageRequest,
-    TextMessage,
-    FlexMessage,
-    Configuration,
-    ApiClient,
+    MessagingApi, MessagingApiBlob, ReplyMessageRequest,
+    TextMessage, FlexMessage, Configuration, ApiClient,
 )
 
 from app.config import CHANNEL_ACCESS_TOKEN, CHANNEL_SECRET
+from app.database import get_waiting_resume_by_user
 from app.modules.resume_service import process_resume_from_line
-from .hand import flex_main_menu, flex_jobs, flex_contact
-from .hand_hr import flex_hr_menu
 
-def is_hr(user_id):
-    conn = sqlite3.connect('resume_bot.db')
-    cursor = conn.cursor()
-    cursor.execute("SELECT role FROM users WHERE line_id = ?", (user_id,))
-    result = cursor.fetchone()
-    conn.close()
-    
-    # ถ้ามีข้อมูลและ role เป็น 'hr' จะส่งค่า True กลับไป
-    if result and result[0] == 'hr':
-        return True
-    return False
+# โหลดฟังก์ชันจากไฟล์แยก
+from .hand import flex_main_menu, flex_jobs, flex_contact, flex_application_history
+from .hand_hr import flex_hr_menu, is_hr, process_hr_message
 
 handler = WebhookHandler(CHANNEL_SECRET)
-
 user_states = {}
-
-configuration = Configuration(
-    access_token=CHANNEL_ACCESS_TOKEN
-)
+configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
 
 UPLOAD_DIR = "resumes"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
-
 
 # ─────────────────────────────────────────────
 # Handler: ข้อความ (Text)
@@ -55,69 +34,21 @@ def handle_message(event):
         api = MessagingApi(api_client)
         reply_messages = []
 
-        # ── ดูตำแหน่งงาน ─────────────────────────
+        # ── 1. ให้ระบบ HR ตรวจสอบคำสั่งก่อน ──
+        if process_hr_message(user_text, user_id, reply_messages):
+            api.reply_message(ReplyMessageRequest(replyToken=event.reply_token, messages=reply_messages))
+            return
+
+        # ── 2. คำสั่งของผู้ใช้ทั่วไป ──
         if user_text == "ดูตำแหน่งงาน":
-            reply_messages.append(
-                FlexMessage(
-                    alt_text="รายการตำแหน่งงานที่เปิดรับ",
-                    contents=flex_jobs()
-                )
-            )
+            reply_messages.append(FlexMessage(alt_text="รายการตำแหน่งงาน", contents=flex_jobs()))
         
-        # ── สมัครงาน (รับข้อความจากปุ่มใน Flex Message) ─────────────────────────
-        elif user_text.startswith("สนใจสมัครตำแหน่ง:"):
-            # 1. ตัดคำว่า "สนใจสมัครตำแหน่ง: " ออก เพื่อเอาแค่ชื่อตำแหน่ง
-            job_title = user_text.replace("สนใจสมัครตำแหน่ง: ", "").strip()
-            
-            # 2. จำสถานะว่า User คนนี้กำลังจะส่ง Resume สมัครตำแหน่งนี้
-            user_states[user_id] = {
-                "state": "waiting_for_resume",
-                "apply_for": job_title
-            }
-            
-            # 3. ตอบกลับให้ผู้ใช้ส่งไฟล์ PDF
-            reply_messages.append(
-                TextMessage(
-                    text=f"คุณกำลังสมัครตำแหน่ง: {job_title}\n\nกรุณาส่งไฟล์ Resume ของคุณ (ต้องเป็นไฟล์ PDF ภาษาอังกฤษเท่านั้น) มาในแชทนี้ได้เลยครับ 📄"
-                )
-            )
+        elif user_text == "เมนู":
+            reply_messages.append(FlexMessage(alt_text="เมนูหลัก", contents=flex_main_menu()))
 
-        # ── ขั้นตอนยืนยันข้อมูลจาก AI ─────────────────────────
-        elif user_text in ["ถูกต้อง", "แก้ไข"]:
-            if user_id in user_states and user_states[user_id].get("state") == "waiting_for_confirm":
-                
-                if user_text == "แก้ไข":
-                    reply_messages.append(TextMessage(text="🔄 ยกเลิกข้อมูลเดิมแล้วครับ กรุณาส่งไฟล์ Resume (PDF) เข้ามาใหม่อีกครั้งได้เลยครับ"))
-                    user_states[user_id]["state"] = "waiting_for_resume" # ถอยกลับไปรอรับไฟล์ใหม่
-                
-                elif user_text == "ถูกต้อง":
-                    # ดึงผลคะแนนที่ AI แอบประเมินและเซฟไว้แล้วจาก Database มาแสดงให้ผู้ใช้ดู
-                    db_data = get_waiting_resume_by_user(user_id)
-                    
-                    if db_data:
-                        # อัปเดตสถานะใน Database ให้เป็น confirmed
-                        conn = sqlite3.connect('resume_bot.db')
-                        conn.execute("UPDATE applicants SET status = 'confirmed' WHERE user_id = ? AND status = 'waiting_confirm'", (user_id,))
-                        conn.commit()
-                        conn.close()
-
-                        # ส่งผลลัพธ์ให้ผู้ใช้
-                        status_icon = "✅ ผ่านเกณฑ์" if db_data['passed'] else "⚠️ ไม่ผ่านเกณฑ์"
-                        summary_msg = (
-                            f"🎉 บันทึกข้อมูลการสมัครสำเร็จ!\n\n"
-                            f"ตำแหน่ง: {db_data['job_title']}\n"
-                            f"สถานะ: {status_icon}\n"
-                            f"คะแนนประเมิน: {db_data['score']}/100\n\n"
-                            f"🤖 สรุปจาก AI:\n{db_data['summary']}\n\n"
-                            f"ข้อมูลของคุณถูกส่งให้ HR เรียบร้อยแล้วครับ ขอบคุณที่ร่วมงานกับเรา!"
-                        )
-                        reply_messages.append(TextMessage(text=summary_msg))
-                        del user_states[user_id] # ปิดจ๊อบ ลบความจำทิ้ง
-                    else:
-                        reply_messages.append(TextMessage(text="❌ ไม่พบข้อมูลที่รอการยืนยัน กรุณาส่งไฟล์ใหม่ครับ"))
-                        del user_states[user_id]
-        
-        # ── วิธีการใช้งาน ─────────────────────────
+        elif user_text == "ดูประวัติการสมัคร":
+            reply_messages.append(FlexMessage(alt_text="ประวัติการสมัครของคุณ", contents=flex_application_history(user_id)))
+            
         elif user_text == "วิธีการใช้งาน":
             instructions = (
                 "💡 วิธีการใช้งานระบบรับสมัครงาน\n\n"
@@ -127,162 +58,86 @@ def handle_message(event):
                 "4️⃣ ระบบ AI จะทำการประเมินเบื้องต้น และส่งข้อมูลให้ HR พิจารณาต่อไปครับ 🎉"
             )
             reply_messages.append(TextMessage(text=instructions))
-
-        elif user_text == "ติดต่อเจ้าหน้าที่":
-            reply_messages.append(
-                FlexMessage(
-                    alt_text="ติดต่อฝ่าย HR",
-                    contents=flex_contact()
-        )
-    )
-
             
+        elif user_text == "ติดต่อเจ้าหน้าที่":
+            reply_messages.append(FlexMessage(alt_text="ติดต่อ HR", contents=flex_contact()))
 
-        # ── เรียกดูเมนูหลัก ─────────────────────────
-        elif user_text == "เมนู":
-            reply_messages.append(
-                FlexMessage(
-                    alt_text="เมนูหลัก",
-                    contents=flex_main_menu()
-                )
-            )
-        
-        # ── (เฉพาะตอนตั้งระบบ) ลงทะเบียนตัวเองเป็น HR ─────────────────
-        # elif user_text == "#ตั้งฉันเป็นแอดมิน":
-            # conn = sqlite3.connect('resume_bot.db')
-            # cursor = conn.cursor()
-            # ใส่ข้อมูล LINE ID ของคุณลงไปในฐานะ 'hr'
-            # cursor.execute("INSERT OR REPLACE INTO users (line_id, role) VALUES (?, ?)", (user_id, 'hr'))
-            # conn.commit()
-            # conn.close()
-            # reply_messages.append(
-                # TextMessage(text="✅ บันทึกสิทธิ์ HR ให้คุณเรียบร้อยแล้ว!\n\nพิมพ์ 'เมนูแอดมิน' เพื่อเริ่มใช้งานได้เลยครับ")
-            # )
-
-        # ── เรียกเมนูจัดการของ HR ─────────────────────────────────
+        # ── เรียกเมนูจัดการของ HR ──
         elif user_text == "เมนูแอดมิน":
-            if is_hr(user_id): # เช็คสิทธิ์ก่อน ถ้าเป็น True ค่อยให้เห็น
-                reply_messages.append(
-                    FlexMessage(
-                        alt_text="เมนูสำหรับจัดการ (HR)",
-                        contents=flex_hr_menu()
-                    )
-                )
-            else: # ถ้าคนนอกพิมพ์มา จะด่ากลับไป
-                reply_messages.append(
-                    TextMessage(text="❌ ขออภัยครับ คุณไม่มีสิทธิ์เข้าถึงส่วนนี้")
-                )
-
-        # ── สร้างงาน (HR) ─────────────────────────
-        elif user_text == "#สร้างงาน":
             if is_hr(user_id):
-                user_states[user_id] = {"state": "waiting_for_title"}
-                reply_messages.append(
-                    TextMessage(text="[โหมด HR] เริ่มการสร้างประกาศงานใหม่!\n\nกรุณาพิมพ์ 'ชื่อตำแหน่ง' ที่ต้องการรับสมัครครับ")
-                )
+                reply_messages.append(FlexMessage(alt_text="เมนู HR", contents=flex_hr_menu()))
             else:
-                reply_messages.append(
-                    TextMessage(text="❌ ขออภัยครับ คุณไม่มีสิทธิ์เข้าถึงส่วนนี้")
-                )
+                reply_messages.append(TextMessage(text="❌ ขออภัยครับ คุณไม่มีสิทธิ์เข้าถึงส่วนนี้"))
 
-        elif user_id in user_states and user_states[user_id]["state"] == "waiting_for_title":
-            user_states[user_id]["title"] = user_text
-            user_states[user_id]["state"] = "waiting_for_skills"
-            reply_messages.append(
-                TextMessage(text=f"รับทราบครับ ตำแหน่ง: {user_text}\n\nต่อไปกรุณาพิมพ์ 'ทักษะ (Skills)' ที่ต้องการ (เช่น Python, SQL, ภาษาอังกฤษ)")
-            )
-
-        elif user_id in user_states and user_states[user_id]["state"] == "waiting_for_skills":
-            title = user_states[user_id]["title"]
-            skills = user_text
-
+        # ── สมัครงาน ──
+        elif user_text.startswith("สนใจสมัครตำแหน่ง:"):
+            # ดึง ID ออกมาโดยแยกด้วยเครื่องหมาย : เพื่อความแม่นยำ
+            job_id = user_text.split(":")[-1].strip() 
+    
             conn = sqlite3.connect('resume_bot.db')
             cursor = conn.cursor()
-            cursor.execute("INSERT INTO jobs (title, requirements) VALUES (?, ?)", (title, skills))
-            conn.commit()
+            cursor.execute("SELECT is_active FROM jobs_status WHERE job_id = ?", (job_id,))
+            res = cursor.fetchone()
             conn.close()
 
-            del user_states[user_id]
-            reply_messages.append(
-                TextMessage(text=f"✅ บันทึกประกาศงานลง Database สำเร็จ!\n\nตำแหน่ง: {title}\nทักษะ: {skills}")
-            )
-        
-
-        # ── ดูตำแหน่งงานทั้งหมด (HR) ─────────────────────────
-        elif user_text == "#ดูงานแอดมิน":
-            if is_hr(user_id):
-                conn = sqlite3.connect('resume_bot.db')
-                cursor = conn.cursor()
-                # ดึงข้อมูลทั้งหมดมาดู เพื่อให้รู้ job_id
-                cursor.execute("SELECT job_id, title, status FROM jobs")
-                jobs = cursor.fetchall()
-                conn.close()
-
-                if not jobs:
-                    reply_messages.append(TextMessage(text="📭 ยังไม่มีข้อมูลตำแหน่งงานในระบบครับ"))
-                else:
-                    text_list = "📋 รายการตำแหน่งงานทั้งหมด:\n\n"
-                    for j in jobs:
-                        # j[0] = job_id, j[1] = title, j[2] = status
-                        status_emoji = "🟢" if j[2] == 'open' else "🔴"
-                        text_list += f"ID: {j[0]} | {j[1]} {status_emoji}\n"
-                    
-                    text_list += "\n(หากต้องการลบลำแหน่งไหน ให้พิมพ์ '#ลบงาน')"
-                    reply_messages.append(TextMessage(text=text_list))
+            # ตรวจสอบสถานะ: ถ้าไม่พบงาน หรือ is_active เป็น 0 (ปิด)
+            if res is None or res[0] == 0:
+                reply_messages.append(TextMessage(text="❌ ขออภัยครับ ตำแหน่งนี้ปิดรับสมัครหรือไม่มีในระบบแล้ว ลองดูตำแหน่งอื่นแทนนะครับ"))
+                # ล้างสถานะเก่าออกเพื่อความสะอาดของข้อมูล
+                if user_id in user_states: del user_states[user_id]
             else:
-                reply_messages.append(TextMessage(text="❌ คุณไม่มีสิทธิ์ใช้งานคำสั่งนี้"))
-
-        # ── ลบตำแหน่งงาน (HR) - ขั้นที่ 1 รับคำสั่ง ─────────────────
-        elif user_text == "#ลบงาน":
-            if is_hr(user_id):
-                # จำสถานะว่า HR กำลังจะพิมพ์เลข ID เพื่อลบงาน
-                user_states[user_id] = {"state": "waiting_for_job_id"}
+                # กรณีเปิดรับสมัครปกติ
+                user_states[user_id] = {
+                    "state": "waiting_for_resume",
+                    "apply_for": job_id
+                }
                 reply_messages.append(
-                    TextMessage(text="🗑️ โหมดลบตำแหน่งงาน\n\nกรุณาพิมพ์ 'เลข ID' ของตำแหน่งที่ต้องการลบ (เช่น 1, 2) ครับ\n*(ดูเลข ID ได้จากเมนู ดูตำแหน่งทั้งหมด)*")
+                    TextMessage(text=f"✅ คุณกำลังสมัครตำแหน่ง: {job_id}\n\nกรุณาส่งไฟล์ Resume ของคุณ (PDF) มาได้เลยครับ 📄")
                 )
-            else:
-                reply_messages.append(TextMessage(text="❌ คุณไม่มีสิทธิ์ใช้งานคำสั่งนี้"))
 
-        # ── ลบตำแหน่งงาน (HR) - ขั้นที่ 2 ดำเนินการลบ ─────────────────
-        elif user_id in user_states and user_states[user_id].get("state") == "waiting_for_job_id":
-            job_id_to_delete = user_text.strip()
-            
-            # เช็คก่อนว่า HR พิมพ์มาเป็นตัวเลขไหม
-            if not job_id_to_delete.isdigit():
-                reply_messages.append(TextMessage(text="❌ กรุณาพิมพ์เลข ID เป็นตัวเลขเท่านั้นครับ (เช่น 1)"))
-            else:
-                conn = sqlite3.connect('resume_bot.db')
-                cursor = conn.cursor()
+        # ── ขั้นตอนยืนยันข้อมูลจาก AI ──
+        elif user_text in ["ถูกต้อง", "แก้ไข"]:
+            if user_id in user_states and user_states[user_id].get("state") == "waiting_for_confirm":
+                if user_text == "แก้ไข":
+                    reply_messages.append(TextMessage(text="🔄 ยกเลิกข้อมูลเดิมแล้วครับ กรุณาส่งไฟล์ Resume (PDF) เข้ามาใหม่อีกครั้งได้เลยครับ"))
+                    user_states[user_id]["state"] = "waiting_for_resume"
                 
-                # ลบข้อมูลออกจากฐานข้อมูล (หรือถ้าอยากแค่เปลี่ยน status ก็ใช้ UPDATE แทนได้ครับ)
-                cursor.execute("DELETE FROM jobs WHERE job_id = ?", (job_id_to_delete,))
-                conn.commit()
-                
-                # เช็คว่าลบสำเร็จไหม (มีแถวที่ถูกลบไปกี่แถว)
-                row_deleted = cursor.rowcount 
-                conn.close()
-                
-                # ลบความจำบอททิ้ง
-                del user_states[user_id]
-                
-                if row_deleted > 0:
-                    reply_messages.append(TextMessage(text=f"✅ ลบตำแหน่งงาน ID: {job_id_to_delete} ออกจากระบบเรียบร้อยแล้ว!"))
-                else:
-                    reply_messages.append(TextMessage(text=f"❌ ไม่พบตำแหน่งงาน ID: {job_id_to_delete} ในระบบครับ หรืออาจถูกลบไปแล้ว"))
+                elif user_text == "ถูกต้อง":
+                    db_data = get_waiting_resume_by_user(user_id)
+                    if db_data:
+                        # 1. แสดงผลคะแนนจริงๆ ให้ผู้ใช้เห็น
+                        score = db_data.get('score', 0)
+                        summary = db_data.get('summary', 'ไม่มีสรุปข้อมูล')
+                        
+                        reply_msg = (
+                            f"✅ ส่งResumesเรียบร้อยแล้วครับ!\n"
+                            f"━━━━━━━━━━━━━━━\n"
+                            f"💯 คะแนนประเมิน AI: {score}/100\n"
+                            f"📝 สรุป: {summary}\n"
+                            f"━━━━━━━━━━━━━━━\n"
+                            f"HR ได้รับข้อมูลของคุณแล้ว และจะติดต่อกลับในภายหลัง 🎉"
+                        )
+                        reply_messages.append(TextMessage(text=reply_msg))
+                        
+                        # 2. อัปเดตสถานะใน Database จาก waiting_confirm ให้เป็น confirmed ทันที
+                        conn = sqlite3.connect('resume_bot.db')
+                        cursor = conn.cursor()
+                        cursor.execute("UPDATE applicants SET status = 'confirmed' WHERE user_id = ? AND status = 'waiting_confirm'", (user_id,))
+                        conn.commit()
+                        conn.close()
 
-        # ── Default ───────────────────────────────
+                        # 3. เคลียร์สถานะเพื่อให้เริ่มสมัครงานใหม่ได้
+                        if user_id in user_states: 
+                            del user_states[user_id]
+                    else:
+                        reply_messages.append(TextMessage(text="❌ ไม่พบข้อมูลที่รอการยืนยัน กรุณาส่งไฟล์ใหม่ครับ"))
+                        if user_id in user_states: 
+                            del user_states[user_id]
         else:
-            reply_messages.append(
-                TextMessage(text=f"FastAPI ได้รับข้อความ: {user_text}")
-            )
+            pass
 
         if reply_messages:
-            api.reply_message(
-                ReplyMessageRequest(
-                    replyToken=event.reply_token,
-                    messages=reply_messages,
-                )
-            )
+            api.reply_message(ReplyMessageRequest(replyToken=event.reply_token, messages=reply_messages))
 
 
 # ─────────────────────────────────────────────
@@ -290,78 +145,114 @@ def handle_message(event):
 # ─────────────────────────────────────────────
 @handler.add(MessageEvent, message=FileMessageContent)
 def handle_file(event):
+    print("\n====== 📥 มีไฟล์ส่งเข้ามาในระบบ! ======")
+    user_id = event.source.user_id
     message_id = event.message.id
-    file_name  = event.message.file_name
-    user_id    = event.source.user_id
+    print(f"👤 User ID: {user_id}")
+    print(f"📄 Message ID: {message_id}")
+    print(f"🔎 สถานะของผู้ใช้นี้ในระบบ: {user_states.get(user_id)}")
 
     with ApiClient(configuration) as api_client:
-        api      = MessagingApi(api_client)
+        api = MessagingApi(api_client)
         blob_api = MessagingApiBlob(api_client)
 
-        # 1. เช็กว่า User คนนี้กำลังอยู่ในขั้นตอน "รอส่ง Resume" หรือเปล่า?
         if user_id not in user_states or user_states[user_id].get("state") != "waiting_for_resume":
-            api.reply_message(
-                ReplyMessageRequest(
-                    replyToken=event.reply_token,
-                    messages=[TextMessage(text="ถ้าต้องการสมัครงาน ให้กดปุ่ม 'สมัครตำแหน่งนี้' จากเมนู 'ดูตำแหน่งงาน' ก่อนนะครับ 😊")]
-                )
-            )
+            print("❌ ยกเลิกการทำงาน: ผู้ใช้ไม่ได้กดปุ่มสมัครงานก่อนส่งไฟล์")
+            api.reply_message(ReplyMessageRequest(
+                replyToken=event.reply_token,
+                messages=[TextMessage(text="❌ กรุณากดปุ่ม 'สมัครตำแหน่งนี้' ในเมนู 'ดูตำแหน่งงาน' ก่อนส่งไฟล์ Resume นะครับ")]
+            ))
             return
 
-        # 2. เช็กนามสกุลไฟล์ว่าเป็น .pdf ไหม (กันคนส่งรูปหรือไฟล์แปลกๆ มา)
-        if not file_name.lower().endswith('.pdf'):
-            api.reply_message(
-                ReplyMessageRequest(
-                    replyToken=event.reply_token,
-                    messages=[TextMessage(text="กรุณาส่งเป็นไฟล์ .pdf ภาษาอังกฤษเท่านั้นนะครับ 📄")]
-                )
-            )
-            return
+        job_id = user_states[user_id]["apply_for"]
+        user_states[user_id]["state"] = "processing"
+        print(f"✅ ผ่านฉลุย! ผู้ใช้กำลังสมัครตำแหน่ง: {job_id}")
 
         try:
+            print("⏳ กำลังดาวน์โหลดไฟล์จากเซิร์ฟเวอร์ Line...")
             file_content = blob_api.get_message_content(message_id)
-            save_path = os.path.join(UPLOAD_DIR, f"{user_id}_{file_name}")
-            with open(save_path, "wb") as f:
+            file_path = os.path.join(UPLOAD_DIR, f"{user_id}_{message_id}.pdf")
+            
+            with open(file_path, "wb") as f:
                 f.write(file_content)
+            print(f"✅ ดาวน์โหลดสำเร็จ! บันทึกไฟล์ไว้ที่: {file_path}")
 
-            # 🌟 เรียก AI ของเพื่อนมาทำงาน (ดึงชื่อ อีเมล เบอร์โทร)
-            job_id = user_states[user_id]["apply_for"]
-            confirm_text = process_resume_from_line(user_id, save_path, job_id)
-            
-            reply_text = confirm_text
-            
-            # เปลี่ยนสถานะผู้ใช้เป็น "รอการยืนยัน"
-            user_states[user_id]["state"] = "waiting_for_confirm"
+            print("🤖 กำลังส่งไฟล์ให้ Gemini AI ประมวลผล...")
+            result = process_resume_from_line(user_id, file_path, job_id) 
+
+            # ── [แก้ไขล่าสุด] ดักจับไฟล์มั่ว และค่า None ──
+            if isinstance(result, str):
+                if "error" in result.lower() or "ไม่ใช่" in result:
+                    user_states[user_id]["state"] = "waiting_for_resume"
+                    reply_msg = TextMessage(text="❌ ระบบไม่พบข้อมูล Resume ในไฟล์นี้ กรุณาส่งไฟล์ที่ถูกต้องใหม่อีกครั้งครับ")
+                else:
+                    db_data = get_waiting_resume_by_user(user_id)
+                    # ✅ เช็กว่ามีชื่อไหม และชื่อต้องไม่ใช่คำว่า None
+                    if db_data and db_data.get('full_name') and str(db_data.get('full_name')).strip().lower() != 'none':
+                        user_states[user_id]["state"] = "waiting_for_confirm"
+                        user_states[user_id]["temp_data"] = db_data
+                        confirm_text = (
+                            "🔎 ตรวจพบข้อมูลของคุณดังนี้:\n\n"
+                            f"👤 ชื่อ: {db_data.get('full_name', 'ไม่ระบุ')}\n"
+                            f"📧 อีเมล: {db_data.get('email', 'ไม่ระบุ')}\n"
+                            f"📞 เบอร์โทร: {db_data.get('phone', 'ไม่ระบุ')}\n\n"
+                            "ข้อมูลนี้ถูกต้องหรือไม่ครับ?\n"
+                            "(พิมพ์ 'ถูกต้อง' เพื่อยืนยัน หรือ 'แก้ไข' เพื่อส่งใหม่)"
+                        )
+                        reply_msg = TextMessage(text=confirm_text)
+                    else:
+                        user_states[user_id]["state"] = "waiting_for_resume"
+                        reply_msg = TextMessage(text="❌ อ่านข้อมูลจากไฟล์ไม่สำเร็จ ดูเหมือนจะไม่ใช่ Resume ครับ กรุณาส่งไฟล์ใหม่อีกครั้ง")
+
+            elif isinstance(result, dict):
+                # ✅ เช็กว่ามีชื่อไหม และชื่อต้องไม่ใช่คำว่า None
+                if "error" in result or not result.get('full_name') or str(result.get('full_name')).strip().lower() == 'none':
+                    user_states[user_id]["state"] = "waiting_for_resume"
+                    reply_msg = TextMessage(text="❌ ระบบไม่พบข้อมูลส่วนตัวในไฟล์นี้ ดูเหมือนจะไม่ใช่ Resume ครับ กรุณาส่งใหม่อีกครั้ง")
+                else:
+                    user_states[user_id]["state"] = "waiting_for_confirm"
+                    user_states[user_id]["temp_data"] = result
+                    confirm_text = (
+                        "🔎 ตรวจพบข้อมูลของคุณดังนี้:\n\n"
+                        f"👤 ชื่อ: {result.get('full_name', 'ไม่ระบุ')}\n"
+                        f"📧 อีเมล: {result.get('email', 'ไม่ระบุ')}\n"
+                        f"📞 เบอร์โทร: {result.get('phone', 'ไม่ระบุ')}\n\n"
+                        "ข้อมูลนี้ถูกต้องหรือไม่ครับ?\n"
+                        "(พิมพ์ 'ถูกต้อง' เพื่อยืนยัน หรือ 'แก้ไข' เพื่อส่งใหม่)"
+                    )
+                    reply_msg = TextMessage(text=confirm_text)
+            else:
+                user_states[user_id]["state"] = "waiting_for_resume"
+                reply_msg = TextMessage(text="❌ AI ตอบกลับมาในรูปแบบที่ไม่รองรับ กรุณาลองใหม่อีกครั้งครับ")
+
+            api.reply_message(ReplyMessageRequest(
+                replyToken=event.reply_token,
+                messages=[reply_msg]
+            ))
 
         except Exception as e:
-            reply_text = f"❌ เกิดข้อผิดพลาดในการอ่านไฟล์: {str(e)}"
-            if user_id in user_states:
-                del user_states[user_id] # ลบสถานะทิ้งถ้าพัง
-
-        api.reply_message(
-            ReplyMessageRequest(
+            print(f"🚨 แจ้งเตือน ERROR ร้ายแรง!: {e}")
+            user_states[user_id]["state"] = "waiting_for_resume"
+            api.reply_message(ReplyMessageRequest(
                 replyToken=event.reply_token,
-                messages=[TextMessage(text=reply_text)],
-            )
-        )
+                messages=[TextMessage(text="❌ เกิดข้อผิดพลาดของระบบ กรุณาส่งไฟล์ใหม่อีกครั้งครับ")]
+            ))
 
 # ─────────────────────────────────────────────
-# Handler: ผู้ใช้กดเพิ่มเพื่อน (Follow)
+# Handler: Follow Event (มีคนแอดบอทมาใหม่)
 # ─────────────────────────────────────────────
 @handler.add(FollowEvent)
 def handle_follow(event):
     with ApiClient(configuration) as api_client:
         api = MessagingApi(api_client)
-        
-        # ส่ง Flex Menu ไปทักทายตอนแอดมาครั้งแรกเลย
-        api.reply_message(
-            ReplyMessageRequest(
-                replyToken=event.reply_token,
-                messages=[
-                    FlexMessage(
-                        alt_text="ยินดีต้อนรับสู่ระบบรับสมัครงาน",
-                        contents=flex_main_menu()
-                    )
-                ]
-            )
+        welcome_msg = (
+            "👋 สวัสดีครับ! ยินดีต้อนรับสู่ระบบรับสมัครงาน\n\n"
+            "คุณสามารถพิมพ์ 'เมนู' หรือกดเมนูด้านล่างเพื่อดูตำแหน่งงานที่เปิดรับได้เลยครับ!"
         )
+        api.reply_message(ReplyMessageRequest(
+            replyToken=event.reply_token,
+            messages=[
+                TextMessage(text=welcome_msg),
+                FlexMessage(alt_text="เมนูหลัก", contents=flex_main_menu())
+            ]
+        ))

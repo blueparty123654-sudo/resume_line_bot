@@ -26,54 +26,59 @@ RESUME = "resume/"  # โฟลเดอร์เก็บไฟล์ Resume �
 
 def init_db():
     """
-    สร้าง Table 'applicants' ถ้ายังไม่มี
-    และสร้างโฟลเดอร์ resume/ สำหรับเก็บไฟล์
+    สร้าง Table 'applicants' (ของผู้สมัคร)
+    และ Table 'users', 'jobs_status' (ของระบบ HR)
     """
-    os.makedirs(RESUME, exist_ok=True)  # สร้างโฟลเดอร์ถ้ายังไม่มี
+    os.makedirs(RESUME, exist_ok=True)
 
     conn = sqlite3.connect(DB_PATH)
+    
+    # 1. ตารางเก็บข้อมูลผู้สมัคร (ของเพื่อน)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS applicants (
             id               INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id          TEXT,    -- LINE user id
-            full_name        TEXT,    -- ชื่อ-นามสกุล  
-            phone            TEXT,    -- เบอร์โทร       
-            email            TEXT,    -- อีเมล          
-            university       TEXT,    -- มหาวิทยาลัย    
-
-            -- ตำแหน่งงาน
-            job_id           TEXT,    -- รหัสตำแหน่ง เช่น dev_backend
-            job_title        TEXT,    -- ชื่อตำแหน่ง เช่น Backend Developer
-
-            -- ผลการประเมิน
-            score            REAL,    -- คะแนนรวม 0-100
-            passed           INTEGER, -- ผ่านไหม (1=ผ่าน, 0=ไม่ผ่าน)
-
-            -- การศึกษา
-            gpa              REAL,    -- เกรดเฉลี่ย เช่น 3.25
-            degree           TEXT,    -- สาขา/คณะที่จบ
-            gpa_pass         INTEGER, -- เกรดผ่านเกณฑ์ (1=ผ่าน, 0=ไม่ผ่าน)
-            degree_pass      INTEGER, -- สาขาตรงไหม (1=ตรง, 0=ไม่ตรง)
-
-            -- ประสบการณ์
-            experience_years INTEGER, -- ประสบการณ์กี่ปี
-            experience_pass  INTEGER, -- ประสบการณ์ผ่านเกณฑ์ไหม
-
-            -- ทักษะ
-            skills_found     TEXT,    -- ทักษะที่มี เช่น ['Python','SQL']
-            skills_missing   TEXT,    -- ทักษะที่ขาด เช่น ['Docker']
-            bonus_found      TEXT,    -- ทักษะ Bonus ที่มี
-
-            -- ไฟล์ Resume
-            file_path        TEXT,    -- path ของไฟล์ที่เก็บใน resume/
-
-            -- AI สรุป
-            summary          TEXT,    -- สรุปจาก AI
+            user_id          TEXT,
+            full_name        TEXT,
+            phone            TEXT,
+            email            TEXT,
+            university       TEXT,
+            job_id           TEXT,
+            job_title        TEXT,
+            score            REAL,
+            passed           INTEGER,
+            gpa              REAL,
+            degree           TEXT,
+            gpa_pass         INTEGER,
+            degree_pass      INTEGER,
+            experience_years INTEGER,
+            experience_pass  INTEGER,
+            skills_found     TEXT,
+            skills_missing   TEXT,
+            bonus_found      TEXT,
+            file_path        TEXT,
+            summary          TEXT,
             recommendation   TEXT,
-            status           TEXT,   -- waiting_confirm / confirmed
+            status           TEXT,
             created_at       TEXT
         )
     """)
+
+    # 2. ตารางจัดการสิทธิ์ HR (ของคุณ)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            line_id TEXT PRIMARY KEY,
+            role TEXT DEFAULT 'user'
+        )
+    """)
+
+    # 3. ตารางเปิด-ปิดตำแหน่งงาน (ของคุณ)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS jobs_status (
+            job_id TEXT PRIMARY KEY,
+            is_active INTEGER DEFAULT 1  -- ค่าเริ่มต้น 1 = เปิดรับสมัคร
+        )
+    """)
+
     conn.commit()
     conn.close()
 
