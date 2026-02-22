@@ -2,123 +2,109 @@
 modules/resume_logic.py
 ========================
 Resume Scoring Engine — LLM Version (Gemini AI)
-
-รองรับหลายตำแหน่งงาน กำหนดเกณฑ์ผ่าน jobs.json
-Gemini อ่านและวิเคราะห์ Resume แทนการนับ keyword เอง
 """
 
-import json #อ่านและเขียนไฟล์ JSON
-import logging #แสดงผล log debug และ error
-from pathlib import Path #เช็คว่าไฟล์มีอยู่จริงไหม
+import json
+import logging
+from pathlib import Path
+import google.generativeai as genai
+import pdfplumber
 from app.config import GEMINI_API_KEY
 
-import google.generativeai as genai    #ใช้เรียก Gemini API
-import pdfplumber   #ใช้อ่านไฟล์
-
-logging.basicConfig(level=logging.INFO) #ไว้แสดง log 
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ══════════════════════════════════════════════════════════
-# CONFIG — ใส่ API Key ที่นี่
+# CONFIG
 # ══════════════════════════════════════════════════════════
-
-GEMINI_API_KEY = GEMINI_API_KEY
+genai.configure(api_key=GEMINI_API_KEY)
 
 # ══════════════════════════════════════════════════════════
 # STEP 1: อ่าน PDF
 # ══════════════════════════════════════════════════════════
 
-def extract_text_from_pdf(file_path: str) -> str: #เปิดไฟล์ PDF แล้วแกะข้อความออกมาทีละหน้าเป็น String เดียว
-    path = Path(file_path) #Check ว่าไฟล์มีอยู่จริงไหม
+def extract_text_from_pdf(file_path: str) -> str:
+    path = Path(file_path)
     if not path.exists():
         raise FileNotFoundError(f"ไม่พบไฟล์: {file_path}")
 
     pages = []
-    with pdfplumber.open(file_path) as pdf: #เปิดไฟล์ PDF และอ่านทีละหน้า
+    with pdfplumber.open(file_path) as pdf:
         logger.info(f"PDF: {len(pdf.pages)} หน้า")
-        for i, page in enumerate(pdf.pages, 1): #ถ้าหน้านั้นมีข้อความก็เก็บไว้ ถ้าไม่มีข้อความก็แสดง warning
+        for i, page in enumerate(pdf.pages, 1):
             text = page.extract_text()
             if text:
                 pages.append(text)
             else:
                 logger.warning(f"หน้า {i} ไม่มีข้อความ")
 
-    full_text = "\n".join(pages).strip() #รวมทุกหน้าเป็น String เดียว
-    if not full_text: #ถ้าไม่มีข้อความเลยก็แสดง error
+    full_text = "\n".join(pages).strip()
+    if not full_text:
         raise ValueError("PDF ไม่มีข้อความ (อาจเป็น scanned image ที่ไม่มี OCR)")
 
     logger.info(f"อ่านข้อความได้ {len(full_text)} ตัวอักษร")
     return full_text
 
-
 # ══════════════════════════════════════════════════════════
 # STEP 2: โหลด Job Config
 # ══════════════════════════════════════════════════════════
 
-def load_job_config(job_id: str, config_path: str = "jobs.json") -> dict: #เปิด Json แล้วดึงเกณฑ์ของตำแหน่งงานที่ต้องการออกมา
-    with open(config_path, encoding="utf-8") as f:#อ่านไฟล์
+def load_job_config(job_id: str, config_path: str = "jobs.json") -> dict:
+    with open(config_path, encoding="utf-8") as f:
         jobs = json.load(f)
-    if job_id not in jobs: 
+    if job_id not in jobs:
         available = list(jobs.keys())
         raise ValueError(f"ไม่พบตำแหน่ง '{job_id}' | ตำแหน่งที่มี: {available}")
     return jobs[job_id]
 
-
 def list_all_jobs(config_path: str = "jobs.json") -> dict:
-    """คืนรายชื่อตำแหน่งทั้งหมด"""
     with open(config_path, encoding="utf-8") as f:
         jobs = json.load(f)
     return {job_id: job["title"] for job_id, job in jobs.items()}
-
 
 # ══════════════════════════════════════════════════════════
 # STEP 3: ให้ gemini วิเคราะห์
 # ══════════════════════════════════════════════════════════
 
-def calculate_score(text: str, job_id: str, config_path: str = "jobs.json") -> dict: #รับข้อความ Resume และ job_id แล้วส่งให้ Gemini วิเคราะห์ตามเกณฑ์ที่กำหนดใน jobs.json
-    job        = load_job_config(job_id, config_path)
+def calculate_score(text: str, job_id: str, config_path: str = "jobs.json") -> dict:
+    job = load_job_config(job_id, config_path)
     text_lower = text.lower()
 
-    # ── Blacklist check ก่อนส่ง AI (ประหยัด API call) ───
+    # Blacklist check
     hits = [kw for kw in job.get("blacklist", []) if kw.lower() in text_lower]
     if hits:
         return {
-            "job_id":        job_id,
-            "job_title":     job["title"],
-            "blacklisted":   True,
-            "blacklist_hits": hits,
-            "score":         0,
-            "passed":        False,
-            "summary":       f"❌ พบคำต้องห้าม: {', '.join(hits)} → ตัดสิทธิ์ทันที",
+            "job_id": job_id, "job_title": job["title"], "blacklisted": True,
+            "blacklist_hits": hits, "score": 0, "passed": False,
+            "summary": f"❌ พบคำต้องห้าม: {', '.join(hits)} → ตัดสิทธิ์ทันที",
         }
 
-    # ── สร้าง Prompt ──────────────────────────────────────
     prompt = f"""
-คุณคือ HR ผู้เชี่ยวชาญ 
+คุณคือ HR ผู้เชี่ยวชาญ
 
 ━━━ ภารกิจลำดับที่ 1 ━━━
-ตรวจสอบว่าเนื้อหาใน "━━━ Resume ━━━" ด้านล่างนี้ คือ "ประวัติส่วนตัวเพื่อสมัครงาน (Resume/CV)" หรือไม่?
-- หากเนื้อหา "ไม่ใช่" Resume (เช่น เป็นรูปภาพสุ่ม, ข้อความแชททั่วไป, เอกสารวิชาการที่ไม่มีประวัติคน) 
-  ให้ตอบ JSON โดยกำหนดค่า `"is_resume": false` และไม่ต้องกรอกฟิลด์อื่น
-
-- หากเนื้อหา "ใช่" Resume ให้กำหนดค่า `"is_resume": true` และเริ่มภารกิจลำดับที่ 2 ทันที
+ตรวจสอบว่าเนื้อหาใน "━━━ Resume ━━━" คือ "ประวัติส่วนตัวเพื่อสมัครงาน" หรือไม่?
+- หากไม่ใช่ตอบ JSON: {{ "is_resume": false }}
+- หากใช่ตอบ JSON: {{ "is_resume": true }} และทำภารกิจที่ 2
 
 ━━━ ภารกิจลำดับที่ 2 (วิเคราะห์คะแนน) ━━━
-วิเคราะห์ Resume สำหรับตำแหน่ง "{job['title']}" ตามเกณฑ์นี้:
-เกรดขั้นต่ำ: {job.get('min_gpa', 0)} | ประสบการณ์ขั้นต่ำ: {job.get('min_experience_years', 0)} ปี
-ทักษะที่ต้องมี (must have): {job.get('must_have_skills', [])}
-ทักษะ Bonus (nice to have): {job.get('nice_to_have_skills', [])}
+วิเคราะห์ Resume ตำแหน่ง "{job['title']}" ตามเกณฑ์:
+เกรดขั้นต่ำ: {job.get('min_gpa', 0)}
+วุฒิการศึกษาที่รับ: {', '.join(job.get('accepted_degrees', []))}
+ประสบการณ์ขั้นต่ำ: {job.get('min_experience_years', 0)} ปี
+ทักษะที่ต้องมี (must have): {', '.join(job.get('must_have_skills', []))}
+ทักษะ Bonus (nice to have): {', '.join(job.get('nice_to_have_skills', []))}
 
-━━━ กฎการให้คะแนน ━━━
-1. ทักษะที่ "must have" ครบ = 60 คะแนน
-2. ทักษะ "nice to have" แต่ละอัน = +5 คะแนน (สูงสุด 20)
-3. เกรดและวุฒิการศึกษาตรง = +10 คะแนน
-4. ประสบการณ์ตรงหรือเกินกำหนด = +10 คะแนน
+━━━ กฎการคิดคะแนน (เต็ม 100) ━━━
+1. ทักษะ "must have" มีครบ = 60 คะแนน (ถ้าขาดให้หักลบตามสัดส่วน)
+2. ทักษะ "nice to have" = ทักษะละ 5 คะแนน (สูงสุด 20 คะแนน)
+3. เกรดและวุฒิการศึกษาตรงตามเกณฑ์ = +10 คะแนน
+4. ประสบการณ์ตรงหรือมากกว่าที่กำหนด = +10 คะแนน
 
 ━━━ Resume ━━━
 {text}
 
-━━━ ตอบเป็น JSON เท่านั้น ห้ามมีข้อความอื่น ━━━
+━━━ ตอบเป็น JSON เท่านั้น ━━━
 {{
   "is_resume": true,
   "full_name": "ชื่อ-นามสกุล",
@@ -126,152 +112,78 @@ def calculate_score(text: str, job_id: str, config_path: str = "jobs.json") -> d
   "email": "อีเมล",
   "university": "มหาวิทยาลัย",
   "score": 75,
-  "passed": true,
   "summary": "สรุปสั้นๆ ภาษาไทย",
   "recommendation": "คำแนะนำสำหรับ HR",
   "gpa": 3.25,
   "degree": "ชื่อวุฒิการศึกษา",
-  "experience_years": 2
+  "experience_years": 2,
+  "must_have_found": [],
+  "must_have_missing": [],
+  "nice_to_have_found": []
 }}
 """
 
-    # ── เรียก Gemeni API ──────────────────────────────────
-    try:
-        genai.configure(api_key=GEMINI_API_KEY)
-        model    = genai.GenerativeModel("gemini-2.5-flash")
-        response = model.generate_content(prompt)
-        raw_text = response.text.strip()
+    model = genai.GenerativeModel("gemini-2.5-flash")
+    response = model.generate_content(prompt)
+    raw_text = response.text.strip().replace("```json", "").replace("```", "").strip()
 
-        # ลบ markdown code block ถ้ามี
-        raw_text = raw_text.replace("```json", "").replace("```", "").strip()
+    result = json.loads(raw_text)
+    
+    if result.get("is_resume") is False:
+        return {"error": "เอกสารไม่ใช่ Resume", "is_resume": False, "score": 0, "passed": False}
 
-        result             = json.loads(raw_text)
-        
-        if result.get("is_resume") is False:
-            logger.warning("ไฟล์ที่ส่งมาไม่ใช่ Resume")
-            return {
-                "error": "เอกสารที่ส่งมาดูเหมือนไม่ใช่ Resume/CV ครับ กรุณาตรวจสอบและส่งใหม่อีกครั้ง",
-                "is_resume": False,
-                "score": 0,
-                "passed": False
-            }
+    # ให้ Python เป็นคนตัดสินชี้ขาด
+    ai_score = result.get("score", 0)
+    passing_score = job.get("passing_score", 60)
+    
+    result["passed"] = bool(ai_score >= passing_score)
+    result["job_id"] = job_id
+    result["job_title"] = job["title"]
+    result["blacklisted"] = False
 
-        result["job_id"]   = job_id
-        result["job_title"] = job["title"]
-        result["blacklisted"] = False
-
-        status = "✅ ผ่านเกณฑ์" if result.get("passed") else "⚠️ ไม่ผ่านเกณฑ์"
-        logger.info(f"{status} | คะแนน: {result.get('score')}/100 | {job['title']}")
-        return result
-
-    except json.JSONDecodeError as e: #คืน error ถ้า AI ตอบไม่ใช่ JSON ตามที่กำหนด
-        logger.error(f"Gemini ตอบไม่ใช่ JSON: {e}")
-        return {"error": "AI ตอบผิดรูปแบบ กรุณาลองใหม่", "score": 0, "passed": False}
-
-    except Exception as e:
-        logger.error(f"Gemini API error: {e}")
-        return {"error": str(e), "score": 0, "passed": False}
-
+    status = "✅ ผ่านเกณฑ์" if result.get("passed") else "⚠️ ไม่ผ่านเกณฑ์"
+    logger.info(f"{status} | คะแนน: {ai_score}/{passing_score} | {job['title']}")
+    
+    return result
 
 # ══════════════════════════════════════════════════════════
-# MAIN FUNCTION — LINE handler เรียกใช้ตรงนี้
+# MAIN FUNCTION
 # ══════════════════════════════════════════════════════════
 
 def process_resume(file_path: str, job_id: str, config_path: str = "jobs.json") -> dict:
-    """
-    ฟังก์ชันหลัก — รับ path ไฟล์ PDF และ job_id
-
-    Usage:
-        result = process_resume("/tmp/resume.pdf", "dev_backend")
-        result = process_resume("/tmp/resume.pdf", "hr_officer")
-        result = process_resume("/tmp/resume.pdf", "marketing")
-    """
-    try:
-        text   = extract_text_from_pdf(file_path)
-        result = calculate_score(text, job_id, config_path)
-        result["text_length"] = len(text)
-        return result
-    except (FileNotFoundError, ValueError) as e:
-        logger.error(f"process_resume error: {e}")
-        return {"error": str(e), "score": 0, "passed": False}
-# ══════════════════════════════════════════════════════════
-# STEP เพิ่ม: ดึงข้อมูลพื้นฐานก่อน Confirm
-# ══════════════════════════════════════════════════════════
-
-def extract_basic_info_only(file_path: str, job_id: str, config_path: str = "jobs.json") -> dict:
-    """
-    อ่าน Resume และดึงเฉพาะข้อมูลติดต่อ
-    (ยังไม่ส่งผลผ่าน/ไม่ผ่านให้ผู้ใช้)
-    """
-
     try:
         text = extract_text_from_pdf(file_path)
         result = calculate_score(text, job_id, config_path)
+        result["text_length"] = len(text)
+        return result
+    except Exception as e:
+        logger.exception("🔥 เกิดข้อผิดพลาดแบบเต็มๆ ใน process_resume:")
+        return {"error": str(e), "score": 0, "passed": False}
 
+def extract_basic_info_only(file_path: str, job_id: str, config_path: str = "jobs.json") -> dict:
+    try:
+        text = extract_text_from_pdf(file_path)
+        result = calculate_score(text, job_id, config_path)
         return {
             "full_name": result.get("full_name"),
             "email": result.get("email"),
             "phone": result.get("phone"),
             "job_id": result.get("job_id"),
             "job_title": result.get("job_title"),
-            "raw_result": result  # เก็บผลประเมินไว้ใช้หลัง confirm
+            "raw_result": result
         }
-
     except Exception as e:
-        logger.error(f"extract_basic_info_only error: {e}")
+        logger.exception("🔥 เกิดข้อผิดพลาดแบบเต็มๆ ใน extract_basic_info_only:")
         return {"error": str(e)}
-
-# ══════════════════════════════════════════════════════════
-# CLI TEST
-# ══════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     import sys
-
-    # แสดงตำแหน่งที่มีทั้งหมด
-    try:
-        all_jobs = list_all_jobs()
-        print("\nตำแหน่งงานที่รองรับ:")
-        for jid, title in all_jobs.items():
-            print(f"  {jid:20s} → {title}")
-        print()
-    except Exception:
-        pass
-
     if len(sys.argv) < 3:
         print("Usage: python modules/resume_logic.py <resume.pdf> <job_id>")
-        print("Example:")
-        print("  python modules/resume_logic.py Resume.pdf dev_backend")
-        print("  python modules/resume_logic.py Resume.pdf hr_officer")
-        print("  python modules/resume_logic.py Resume.pdf marketing")
         sys.exit(1)
-
-    result = process_resume(sys.argv[1], sys.argv[2])
-
-    print("═" * 60)
-    print("  ผลการประเมิน Resume")
-    print("═" * 60)
-
-    if result.get("error"):
-        print(f"  ❌ Error: {result['error']}")
-
-    elif result.get("blacklisted"):
-        print(f"  ❌ ตัดสิทธิ์ทันที!")
-        print(f"  พบคำต้องห้าม: {result['blacklist_hits']}")
-
-    else:
-        status = "✅ ผ่านเกณฑ์" if result["passed"] else "⚠️ ไม่ผ่านเกณฑ์"
-        print(f"  {status}")
-        print(f"  ตำแหน่ง          : {result.get('job_title')}")
-        print(f"  คะแนนรวม         : {result.get('score')}/100")
-        print(f"  GPA              : {result.get('gpa')} ({'✅' if result.get('gpa_pass') else '❌'})")
-        print(f"  สาขา             : {result.get('degree')} ({'✅' if result.get('degree_pass') else '❌'})")
-        print(f"  ประสบการณ์        : {result.get('experience_years')} ปี ({'✅' if result.get('experience_pass') else '❌'})")
-        print(f"  ทักษะที่มี        : {result.get('must_have_found', [])}")
-        print(f"  ทักษะที่ขาด       : {result.get('must_have_missing', [])}")
-        print(f"  Bonus ที่มี       : {result.get('nice_to_have_found', [])}")
-        print("─" * 60)
-        print(f"  สรุป    : {result.get('summary')}")
-        print(f"  แนะนำ HR: {result.get('recommendation')}")
-
-    print("═" * 60)
+    
+    try:
+        res = process_resume(sys.argv[1], sys.argv[2])
+        print(json.dumps(res, indent=2, ensure_ascii=False))
+    except Exception as e:
+        print(f"Error: {e}")
